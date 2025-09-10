@@ -32,21 +32,34 @@ logger = logging.getLogger(__name__)
 class ParallaxGeneratorColab:
     """Simplified parallax generator for Google Colab."""
     
-    def __init__(self, output_dir: str = "/content/parallax_output"):
+    def __init__(self, output_dir: str = "/content/parallax_output", 
+                 drive_cache: bool = True, drive_output_dir: str = "/content/drive/MyDrive/parallax_gallery"):
         """
         Initialize the parallax generator for Colab.
         
         Args:
-            output_dir: Directory to save generated assets
+            output_dir: Local directory to save generated assets
+            drive_cache: Whether to also save images to Google Drive for persistence
+            drive_output_dir: Google Drive directory for persistent image storage
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize model manager for Colab
-        self.model_manager = ModelManagerColab()
+        # Google Drive persistent storage
+        self.drive_cache = drive_cache
+        self.drive_output_dir = Path(drive_output_dir) if drive_cache else None
         
-        # Mount Google Drive for persistent model caching
-        self.model_manager.mount_drive()
+        # Initialize model manager for Colab (models in local storage, not Drive)
+        self.model_manager = ModelManagerColab(use_drive_cache=False)
+        
+        # Mount Google Drive only if needed for image storage
+        if self.drive_cache:
+            self.model_manager.mount_drive(force=True)
+        
+        # Setup Drive gallery if enabled
+        if self.drive_cache and self.drive_output_dir:
+            self.drive_output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"🖼️  Drive gallery enabled: {self.drive_output_dir}")
         
         # Simplified layer configuration for single image generation
         self.layer_config = {
@@ -56,7 +69,76 @@ class ParallaxGeneratorColab:
         }
         
         logger.info(f"ParallaxGeneratorColab initialized. Output: {self.output_dir}")
-        logger.info("🔄 Models will be cached in Google Drive for persistence across sessions")
+        logger.info("📦 Models cached locally (session duration ~12 hours)")
+        if self.drive_cache:
+            logger.info("🖼️  Images will be saved to both local storage and Google Drive")
+    
+    def save_image_with_metadata(self, image: Image.Image, filename: str, metadata: dict) -> dict:
+        """
+        Save image to both local and Drive locations with metadata.
+        
+        Args:
+            image: PIL Image to save
+            filename: Base filename (without extension)
+            metadata: Dictionary with generation metadata
+            
+        Returns:
+            Dictionary with local and drive paths
+        """
+        import json
+        from datetime import datetime
+        
+        # Create timestamp for unique naming
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = f"{timestamp}_{filename.replace(' ', '_')}"
+        
+        # Save locally
+        local_image_path = self.output_dir / f"{safe_filename}.png"
+        local_meta_path = self.output_dir / f"{safe_filename}_meta.json"
+        
+        image.save(local_image_path)
+        
+        # Save metadata
+        full_metadata = {
+            "timestamp": timestamp,
+            "filename": safe_filename,
+            "local_path": str(local_image_path),
+            **metadata
+        }
+        
+        with open(local_meta_path, 'w') as f:
+            json.dump(full_metadata, f, indent=2)
+        
+        result = {
+            "local_image": str(local_image_path),
+            "local_metadata": str(local_meta_path),
+            "drive_image": None,
+            "drive_metadata": None
+        }
+        
+        # Save to Drive if enabled
+        if self.drive_cache and self.drive_output_dir:
+            try:
+                drive_image_path = self.drive_output_dir / f"{safe_filename}.png"
+                drive_meta_path = self.drive_output_dir / f"{safe_filename}_meta.json"
+                
+                # Copy to Drive
+                image.save(drive_image_path)
+                
+                # Update metadata with drive path
+                full_metadata["drive_path"] = str(drive_image_path)
+                
+                with open(drive_meta_path, 'w') as f:
+                    json.dump(full_metadata, f, indent=2)
+                
+                result["drive_image"] = str(drive_image_path)
+                result["drive_metadata"] = str(drive_meta_path)
+                
+                logger.info(f"💾 Saved to Drive: {drive_image_path.name}")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to save to Drive: {e}")
+        
+        return result
     
     def create_layer_mask(self, width: int, height: int, layer_range: Tuple[int, int]) -> Image.Image:
         """
@@ -178,29 +260,54 @@ class ParallaxGeneratorColab:
             generated_image = self.apply_circular_padding(generated_image, padding=64)
             logger.info("✅ Seamless tiling applied")
         
-        # Save the image
-        output_path = self.output_dir / f"parallax_image_{width}x{height}.png"
-        generated_image.save(output_path)
+        # Save the main image with metadata
+        main_metadata = {
+            "prompt": prompt,
+            "enhanced_prompt": enhanced_prompt,
+            "resolution": {"width": width, "height": height},
+            "tiling_enabled": enable_tiling,
+            "model_used": "sd15_base",
+            "type": "single_image"
+        }
         
-        # Create a tiled preview to demonstrate seamless tiling
+        main_result = self.save_image_with_metadata(
+            generated_image, 
+            f"parallax_{width}x{height}",
+            main_metadata
+        )
+        
+        # Create and save tiled preview if enabled
+        preview_result = None
         if enable_tiling:
             preview_image = self.create_tiled_preview(generated_image, tiles=3)
-            preview_path = self.output_dir / f"tiled_preview_{width}x{height}.png"
-            preview_image.save(preview_path)
-            logger.info(f"🖼️  Tiled preview saved: {preview_path.name}")
+            
+            preview_metadata = {
+                **main_metadata,
+                "type": "tiled_preview",
+                "tiles": 3
+            }
+            
+            preview_result = self.save_image_with_metadata(
+                preview_image,
+                f"preview_{width}x{height}",
+                preview_metadata
+            )
+            logger.info(f"🖼️  Tiled preview created")
         
         results = {
             "prompt": prompt,
             "enhanced_prompt": enhanced_prompt,
             "resolution": (width, height),
             "tiling_enabled": enable_tiling,
-            "image_path": str(output_path),
-            "preview_path": str(preview_path) if enable_tiling else None,
+            "main_image": main_result,
+            "preview_image": preview_result,
             "model_used": "sd15_base"
         }
         
         logger.info("✅ Single image generation complete!")
-        logger.info(f"📁 Saved to: {output_path}")
+        logger.info(f"📁 Local: {main_result['local_image']}")
+        if main_result['drive_image']:
+            logger.info(f"💾 Drive: {main_result['drive_image']}")
         
         return results
     
@@ -367,6 +474,81 @@ class ParallaxGeneratorColab:
             print(f"🔥 CUDA Version: {torch.version.cuda}")
         else:
             print("⚠️  No GPU detected - this will be very slow!")
+    
+    def list_gallery(self, location: str = "both") -> dict:
+        """
+        List all generated images in the gallery.
+        
+        Args:
+            location: "local", "drive", or "both"
+            
+        Returns:
+            Dictionary with gallery information
+        """
+        import json
+        
+        gallery = {"local": [], "drive": []}
+        
+        # List local images
+        if location in ["local", "both"]:
+            for meta_file in self.output_dir.glob("*_meta.json"):
+                try:
+                    with open(meta_file, 'r') as f:
+                        metadata = json.load(f)
+                    gallery["local"].append(metadata)
+                except Exception as e:
+                    logger.warning(f"⚠️  Could not read metadata: {meta_file} - {e}")
+        
+        # List drive images
+        if location in ["drive", "both"] and self.drive_cache and self.drive_output_dir:
+            for meta_file in self.drive_output_dir.glob("*_meta.json"):
+                try:
+                    with open(meta_file, 'r') as f:
+                        metadata = json.load(f)
+                    gallery["drive"].append(metadata)
+                except Exception as e:
+                    logger.warning(f"⚠️  Could not read drive metadata: {meta_file} - {e}")
+        
+        # Sort by timestamp
+        for key in gallery:
+            gallery[key].sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        return gallery
+    
+    def print_gallery(self, location: str = "both"):
+        """Print a formatted gallery of generated images."""
+        gallery = self.list_gallery(location)
+        
+        total_images = len(gallery["local"]) + len(gallery["drive"])
+        print(f"\n🖼️  Gallery ({total_images} images)")
+        print("=" * 50)
+        
+        if gallery["local"]:
+            print(f"\n📁 Local Images ({len(gallery['local'])})")
+            for i, meta in enumerate(gallery["local"][:5]):  # Show last 5
+                prompt = meta.get("prompt", "Unknown")[:50] + "..." if len(meta.get("prompt", "")) > 50 else meta.get("prompt", "Unknown")
+                timestamp = meta.get("timestamp", "Unknown")
+                resolution = meta.get("resolution", {})
+                size = f"{resolution.get('width', '?')}x{resolution.get('height', '?')}"
+                print(f"  {i+1}. {timestamp} - {size} - {prompt}")
+        
+        if gallery["drive"] and self.drive_cache:
+            print(f"\n💾 Drive Images ({len(gallery['drive'])})")
+            for i, meta in enumerate(gallery["drive"][:5]):  # Show last 5
+                prompt = meta.get("prompt", "Unknown")[:50] + "..." if len(meta.get("prompt", "")) > 50 else meta.get("prompt", "Unknown")
+                timestamp = meta.get("timestamp", "Unknown")
+                resolution = meta.get("resolution", {})
+                size = f"{resolution.get('width', '?')}x{resolution.get('height', '?')}"
+                print(f"  {i+1}. {timestamp} - {size} - {prompt}")
+        
+        if total_images == 0:
+            print("No images found. Generate some first!")
+        elif total_images > 10:
+            print(f"\n... and {total_images - 10} more images")
+        
+        print(f"\n📁 Local: {self.output_dir}")
+        if self.drive_cache:
+            print(f"💾 Drive: {self.drive_output_dir}")
 
 
 # Convenience functions for Colab notebook usage
@@ -418,7 +600,9 @@ def main():
     parser.add_argument("--mode", choices=["single", "layers"], default="single", 
                        help="Generation mode: 'single' for one tiled image, 'layers' for full parallax pack")
     parser.add_argument("--no-tiling", action="store_true", help="Disable seamless tiling (single mode only)")
+    parser.add_argument("--no-drive", action="store_true", help="Disable Google Drive image storage (local only)")
     parser.add_argument("--gpu-info", action="store_true", help="Show GPU information and exit")
+    parser.add_argument("--gallery", action="store_true", help="Show image gallery and exit")
     
     args = parser.parse_args()
     
@@ -433,6 +617,12 @@ def main():
             print(f"🔥 CUDA Version: {torch.version.cuda}")
         else:
             print("⚠️  No GPU detected - this will be very slow!")
+        return
+    
+    # Show gallery if requested
+    if args.gallery:
+        generator = ParallaxGeneratorColab(output_dir=args.output, drive_cache=not args.no_drive)
+        generator.print_gallery()
         return
     
     # Check if prompt is provided
@@ -452,7 +642,7 @@ def main():
             enable_tiling = not args.no_tiling
             print(f"🔄 Tiling: {'Enabled' if enable_tiling else 'Disabled'}")
             
-            generator = ParallaxGeneratorColab(output_dir=args.output)
+            generator = ParallaxGeneratorColab(output_dir=args.output, drive_cache=not args.no_drive)
             generator.show_gpu_info()
             
             results = generator.generate_single_tiled_image(
@@ -460,13 +650,15 @@ def main():
             )
             
             print("\n✅ Single image generation complete!")
-            print(f"📄 Image saved: {Path(results['image_path']).name}")
-            if results['preview_path']:
-                print(f"🖼️  Tiled preview: {Path(results['preview_path']).name}")
+            print(f"📁 Local: {Path(results['main_image']['local_image']).name}")
+            if results['main_image']['drive_image']:
+                print(f"💾 Drive: {Path(results['main_image']['drive_image']).name}")
+            if results['preview_image']:
+                print(f"🖼️  Tiled preview: {Path(results['preview_image']['local_image']).name}")
                 
         elif args.mode == "layers":
             # Generate full parallax layers
-            generator = ParallaxGeneratorColab(output_dir=args.output)
+            generator = ParallaxGeneratorColab(output_dir=args.output, drive_cache=not args.no_drive)
             generator.show_gpu_info()
             
             results = generator.generate_parallax_layers(

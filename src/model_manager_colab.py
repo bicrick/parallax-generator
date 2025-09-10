@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import logging
 
+
 from diffusers import StableDiffusionInpaintPipeline, StableDiffusionPipeline
 import torch
 
@@ -40,19 +41,26 @@ def get_hf_token():
 class ModelManagerColab:
     """Manages model downloading, caching, and loading for parallax generation in Google Colab."""
     
-    def __init__(self, cache_dir: Optional[str] = None):
+    def __init__(self, cache_dir: Optional[str] = None, use_drive_cache: bool = False):
         """
         Initialize ModelManager with caching directory optimized for Colab.
         
         Args:
-            cache_dir: Custom cache directory. If None, uses Colab's persistent storage.
+            cache_dir: Custom cache directory. If None, uses local Colab storage.
+            use_drive_cache: Whether to use Google Drive (slow, limited space) or local storage (fast, session-only)
         """
-        # Use Colab's persistent storage by default
+        # Use local Colab storage by default (faster, more space)
         if cache_dir is None:
-            cache_dir = "/content/drive/MyDrive/parallax_models"
+            if use_drive_cache:
+                cache_dir = "/content/drive/MyDrive/parallax_models"
+                logger.warning("⚠️  Using Drive cache - models are large (~4GB each) and may exceed Drive quota")
+            else:
+                cache_dir = "/content/huggingface_cache"
+                logger.info("📦 Using local Colab storage - models persist for session duration (~12 hours)")
         
         self.cache_dir = Path(cache_dir)
         self.models = {}
+        self.use_drive_cache = use_drive_cache
         
         # Get HuggingFace token from Colab userdata
         self.hf_token = get_hf_token()
@@ -263,8 +271,17 @@ class ModelManagerColab:
             total_size /= 1024.0
         return f"{total_size:.1f} TB"
     
-    def mount_drive(self):
-        """Helper method to mount Google Drive in Colab."""
+    def mount_drive(self, force: bool = False):
+        """
+        Helper method to mount Google Drive in Colab.
+        
+        Args:
+            force: Force mounting even if not using drive cache
+        """
+        if not self.use_drive_cache and not force:
+            logger.info("💾 Skipping Drive mount - using local storage for models")
+            return
+            
         try:
             from google.colab import drive
             drive.mount('/content/drive')
