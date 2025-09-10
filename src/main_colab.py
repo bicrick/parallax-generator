@@ -117,10 +117,10 @@ class SeamlessLatentProcessor:
     def __init__(self, blend_width: int = 64):
         self.blend_width = blend_width
     
-    def create_seamless_noise(self, shape: Tuple[int, ...], generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    def create_seamless_noise(self, shape: Tuple[int, ...], generator: Optional[torch.Generator] = None, dtype: torch.dtype = torch.float16) -> torch.Tensor:
         """Create seamless noise tensor."""
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        noise = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
+        noise = torch.randn(shape, generator=generator, device=device, dtype=dtype)
         
         if noise.size(-1) <= self.blend_width * 2:
             return noise
@@ -180,11 +180,12 @@ class ParallaxGeneratorColab:
         if negative_prompt:
             generation_params["negative_prompt"] = negative_prompt
         
-        # Use seamless noise
+        # Use seamless noise with correct dtype
         latent_shape = (1, pipeline.unet.config.in_channels, height // 8, width // 8)
         custom_latents = self.latent_processor.create_seamless_noise(
             latent_shape, 
-            generator=generation_params["generator"]
+            generator=generation_params["generator"],
+            dtype=pipeline.unet.dtype
         )
         generation_params["latents"] = custom_latents
         
