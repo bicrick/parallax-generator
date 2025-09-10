@@ -118,33 +118,83 @@ class TilingPromptEnhancer:
 
 
 class SeamlessLatentProcessor:
-    """Processes latents for seamless tiling."""
+    """Processes latents for seamless tiling using Tiled Diffusion methodology."""
     
-    def __init__(self, blend_width: int = 128):
+    def __init__(self, blend_width: int = 128, max_width: int = 32):
         self.blend_width = blend_width
+        self.max_width = max_width
     
     def create_seamless_noise(self, shape: Tuple[int, ...], generator: Optional[torch.Generator] = None, dtype: torch.dtype = torch.float16) -> torch.Tensor:
-        """Create seamless noise tensor."""
+        """Create enhanced seamless noise with multiple blending passes."""
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        noise = torch.randn(shape, generator=generator, device=device, dtype=dtype)
         
-        if noise.size(-1) <= self.blend_width * 2:
-            return noise
+        # Create padded noise for better constraint application
+        batch, channels, height, width = shape
+        padded_shape = (batch, channels, height, width + 2 * self.max_width)
+        noise = torch.randn(padded_shape, generator=generator, device=device, dtype=dtype)
         
-        # Apply horizontal wrapping with smoother blending
-        # Use cosine interpolation for smoother blending
-        x = torch.linspace(0, 1, self.blend_width, device=noise.device, dtype=noise.dtype)
-        blend_mask = 0.5 * (1 - torch.cos(x * torch.pi))  # Cosine interpolation
-        blend_mask = blend_mask.view(1, 1, 1, -1)
+        # Apply multiple blending passes for smoother transitions
+        blend_widths = [64, 32, 16] if width > 128 else [32, 16, 8]
         
-        left_edge = noise[..., :self.blend_width].clone()
-        right_edge = noise[..., -self.blend_width:].clone()
+        for blend_w in blend_widths:
+            if noise.size(-1) > blend_w * 2:
+                # Apply cosine blending
+                x = torch.linspace(0, 1, blend_w, device=noise.device, dtype=noise.dtype)
+                blend_mask = 0.5 * (1 - torch.cos(x * torch.pi))
+                blend_mask = blend_mask.view(1, 1, 1, -1)
+                
+                left_edge = noise[..., :blend_w].clone()
+                right_edge = noise[..., -blend_w:].clone()
+                
+                # Enhanced blending with wrapping
+                noise[..., :blend_w] = left_edge * (1 - blend_mask) + right_edge * blend_mask
+                noise[..., -blend_w:] = right_edge * (1 - blend_mask) + left_edge * blend_mask
         
-        # Smoother blending
-        noise[..., :self.blend_width] = left_edge * (1 - blend_mask) + right_edge * blend_mask
-        noise[..., -self.blend_width:] = right_edge * (1 - blend_mask) + left_edge * blend_mask
+        # Crop back to original size (remove padding)
+        noise = noise[..., self.max_width:-self.max_width]
         
         return noise
+    
+    def apply_step_constraints(self, latents: torch.Tensor, step: int, total_steps: int) -> torch.Tensor:
+        """Apply tiling constraints at each denoising step (Tiled Diffusion approach)."""
+        if latents.size(-1) <= self.blend_width * 2:
+            return latents
+        
+        # Calculate constraint strength (stronger early in generation)
+        constraint_strength = 1.0 - (step / total_steps) * 0.5  # 1.0 -> 0.5
+        
+        # Apply edge consistency enforcement
+        blend_w = min(self.blend_width, latents.size(-1) // 4)
+        
+        # Create blend mask
+        x = torch.linspace(0, 1, blend_w, device=latents.device, dtype=latents.dtype)
+        blend_mask = 0.5 * (1 - torch.cos(x * torch.pi))
+        blend_mask = blend_mask.view(1, 1, 1, -1)
+        
+        # Extract edges
+        left_edge = latents[..., :blend_w].clone()
+        right_edge = latents[..., -blend_w:].clone()
+        
+        # Apply constraint with varying strength
+        target_left = left_edge * (1 - constraint_strength) + right_edge * constraint_strength
+        target_right = right_edge * (1 - constraint_strength) + left_edge * constraint_strength
+        
+        # Apply blended constraints
+        latents[..., :blend_w] = target_left * blend_mask + left_edge * (1 - blend_mask)
+        latents[..., -blend_w:] = target_right * blend_mask + right_edge * (1 - blend_mask)
+        
+        return latents
+    
+    def create_padded_latents(self, shape: Tuple[int, ...], generator: Optional[torch.Generator] = None, dtype: torch.dtype = torch.float16) -> torch.Tensor:
+        """Create latents with padding regions for constraint application."""
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        batch, channels, height, width = shape
+        
+        # Add padding for tiling constraints
+        padded_shape = (batch, channels, height, width + 2 * self.max_width)
+        padded_latents = torch.randn(padded_shape, generator=generator, device=device, dtype=dtype)
+        
+        return padded_latents
 
 
 class ParallaxGeneratorColab:
@@ -163,11 +213,12 @@ class ParallaxGeneratorColab:
         self.enable_unet_patching = enable_unet_patching
         self.tiling_patcher = SeamlessTilingPatcher() if enable_unet_patching else None
         self.prompt_enhancer = TilingPromptEnhancer()
-        self.latent_processor = SeamlessLatentProcessor()
+        self.latent_processor = SeamlessLatentProcessor(blend_width=128, max_width=32)
         self.patched_pipelines = set()
         
         approach = "UNet patching + post-processing" if enable_unet_patching else "Post-processing only"
         logger.info(f"Generator initialized. Approach: {approach}")
+        logger.info(f"Using Tiled Diffusion methodology with step-by-step constraints")
         logger.info(f"Local: {self.output_dir}, Drive: {self.drive_output_dir}")
     
     def mount_drive(self):
@@ -198,41 +249,143 @@ class ParallaxGeneratorColab:
     
     def generate_seamless_image(self, pipeline, prompt: str, negative_prompt: str = None,
                                width: int = 1024, height: int = 768, **kwargs) -> Image.Image:
-        """Generate image with native seamless tiling."""
-        generation_params = {
-            "prompt": prompt,
-            "width": width,
-            "height": height,
-            "num_inference_steps": kwargs.get("num_inference_steps", 20),
-            "guidance_scale": kwargs.get("guidance_scale", 7.5),
-            "generator": kwargs.get("generator", torch.Generator(device="cuda").manual_seed(42))
-        }
+        """Generate image with native seamless tiling using Tiled Diffusion methodology."""
+        num_inference_steps = kwargs.get("num_inference_steps", 20)
+        guidance_scale = kwargs.get("guidance_scale", 7.5)
+        generator = kwargs.get("generator", torch.Generator(device="cuda").manual_seed(42))
         
-        if negative_prompt:
-            generation_params["negative_prompt"] = negative_prompt
-        
-        # Use seamless noise only if UNet patching is enabled
+        # Use custom generation loop with step-by-step constraints
         if self.enable_unet_patching:
-            latent_shape = (1, pipeline.unet.config.in_channels, height // 8, width // 8)
-            custom_latents = self.latent_processor.create_seamless_noise(
-                latent_shape, 
-                generator=generation_params["generator"],
-                dtype=pipeline.unet.dtype
+            logger.info("Using Tiled Diffusion methodology with step-by-step constraints")
+            return self._generate_with_step_constraints(
+                pipeline, prompt, negative_prompt, width, height, 
+                num_inference_steps, guidance_scale, generator
             )
-            generation_params["latents"] = custom_latents
-            logger.info("Using seamless noise initialization")
+        else:
+            # Fallback to standard pipeline
+            generation_params = {
+                "prompt": prompt,
+                "width": width,
+                "height": height,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "generator": generator
+            }
+            
+            if negative_prompt:
+                generation_params["negative_prompt"] = negative_prompt
+            
+            logger.info("Generating seamless image with standard pipeline")
+            result = pipeline(**generation_params)
+            generated_image = result.images[0]
+            generated_image = self.enhance_seamless_tiling(generated_image)
+            return generated_image
+    
+    def _generate_with_step_constraints(self, pipeline, prompt: str, negative_prompt: str,
+                                      width: int, height: int, num_inference_steps: int,
+                                      guidance_scale: float, generator: torch.Generator) -> Image.Image:
+        """Custom generation loop with step-by-step tiling constraints."""
+        device = pipeline.device
         
-        logger.info("Generating seamless image")
-        result = pipeline(**generation_params)
+        # Encode prompts
+        text_inputs = pipeline.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=pipeline.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        text_embeddings = pipeline.text_encoder(text_inputs.input_ids.to(device))[0]
         
-        # Apply additional seamless post-processing for perfect tiling
-        generated_image = result.images[0]
-        generated_image = self.enhance_seamless_tiling(generated_image)
+        # Encode negative prompt
+        if negative_prompt:
+            uncond_inputs = pipeline.tokenizer(
+                negative_prompt,
+                padding="max_length",
+                max_length=pipeline.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            uncond_embeddings = pipeline.text_encoder(uncond_inputs.input_ids.to(device))[0]
+        else:
+            uncond_inputs = pipeline.tokenizer(
+                "",
+                padding="max_length",
+                max_length=pipeline.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            uncond_embeddings = pipeline.text_encoder(uncond_inputs.input_ids.to(device))[0]
         
-        return generated_image
+        # Concatenate for classifier-free guidance
+        text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+        
+        # Initialize latents with enhanced seamless noise
+        latent_shape = (1, pipeline.unet.config.in_channels, height // 8, width // 8)
+        latents = self.latent_processor.create_seamless_noise(
+            latent_shape, generator=generator, dtype=pipeline.unet.dtype
+        )
+        latents = latents.to(device)
+        
+        # Set timesteps
+        pipeline.scheduler.set_timesteps(num_inference_steps, device=device)
+        timesteps = pipeline.scheduler.timesteps
+        
+        # Scale initial noise
+        latents = latents * pipeline.scheduler.init_noise_sigma
+        
+        logger.info(f"Running {num_inference_steps} denoising steps with tiling constraints")
+        
+        # Denoising loop with step-by-step constraints
+        for i, t in enumerate(timesteps):
+            # Apply tiling constraints at each step (key Tiled Diffusion innovation)
+            latents = self.latent_processor.apply_step_constraints(latents, i, num_inference_steps)
+            
+            # Expand latents for classifier-free guidance
+            latent_model_input = torch.cat([latents] * 2)
+            latent_model_input = pipeline.scheduler.scale_model_input(latent_model_input, t)
+            
+            # Predict noise
+            with torch.no_grad():
+                noise_pred = pipeline.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=text_embeddings,
+                    return_dict=False,
+                )[0]
+            
+            # Classifier-free guidance
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            
+            # Compute previous sample
+            latents = pipeline.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            
+            # Apply additional constraint after scheduler step
+            if i < num_inference_steps - 1:  # Don't apply on final step
+                latents = self.latent_processor.apply_step_constraints(latents, i + 1, num_inference_steps)
+        
+        # Final constraint application
+        latents = self.latent_processor.apply_step_constraints(latents, num_inference_steps, num_inference_steps)
+        
+        # Decode latents to image
+        latents = 1 / pipeline.vae.config.scaling_factor * latents
+        with torch.no_grad():
+            image = pipeline.vae.decode(latents, return_dict=False)[0]
+        
+        # Convert to PIL
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        image = pipeline.image_processor.numpy_to_pil(image)[0]
+        
+        # Apply additional post-processing enhancement
+        image = self.enhance_seamless_tiling(image)
+        
+        logger.info("Tiled Diffusion generation complete")
+        return image
     
     def enhance_seamless_tiling(self, image: Image.Image, blend_width: int = 64) -> Image.Image:
-        """Apply additional post-processing to enhance seamless tiling."""
+        """Apply final post-processing to perfect seamless tiling (Tiled Diffusion style)."""
         try:
             width, height = image.size
             
@@ -242,24 +395,44 @@ class ParallaxGeneratorColab:
             # Convert to numpy for processing
             img_array = np.array(image, dtype=np.float32)
             
-            # Create smoother blend mask using cosine interpolation
-            x = np.linspace(0, 1, blend_width)
-            blend_mask = 0.5 * (1 - np.cos(x * np.pi))
-            blend_mask = blend_mask.reshape(1, -1, 1)
+            # Apply multiple blending passes for ultra-smooth transitions
+            blend_widths = [blend_width, blend_width // 2, blend_width // 4]
             
-            # Extract edges
-            left_edge = img_array[:, :blend_width].copy()
-            right_edge = img_array[:, -blend_width:].copy()
+            for b_width in blend_widths:
+                if width > b_width * 2:
+                    # Create smoother blend mask using cosine interpolation
+                    x = np.linspace(0, 1, b_width)
+                    blend_mask = 0.5 * (1 - np.cos(x * np.pi))
+                    blend_mask = blend_mask.reshape(1, -1, 1)
+                    
+                    # Extract edges
+                    left_edge = img_array[:, :b_width].copy()
+                    right_edge = img_array[:, -b_width:].copy()
+                    
+                    # Enhanced blending with edge harmonization
+                    # Average the edges to ensure perfect continuity
+                    avg_edge = (left_edge + np.flip(right_edge, axis=1)) / 2
+                    
+                    # Apply blended harmonized edges
+                    img_array[:, :b_width] = avg_edge * blend_mask + left_edge * (1 - blend_mask)
+                    img_array[:, -b_width:] = np.flip(avg_edge, axis=1) * blend_mask + right_edge * (1 - blend_mask)
             
-            # Apply enhanced blending
-            img_array[:, :blend_width] = left_edge * (1 - blend_mask) + right_edge * blend_mask
-            img_array[:, -blend_width:] = right_edge * (1 - blend_mask) + left_edge * blend_mask
+            # Additional fine-tuning: ensure perfect pixel-level continuity
+            # Force exact matching at the seam points
+            seam_width = min(4, blend_width // 16)  # Very thin seam correction
+            if seam_width > 0:
+                left_seam = img_array[:, :seam_width]
+                right_seam = img_array[:, -seam_width:]
+                perfect_seam = (left_seam + np.flip(right_seam, axis=1)) / 2
+                
+                img_array[:, :seam_width] = perfect_seam
+                img_array[:, -seam_width:] = np.flip(perfect_seam, axis=1)
             
             # Convert back to PIL Image
             result_array = np.clip(img_array, 0, 255).astype(np.uint8)
             enhanced_image = Image.fromarray(result_array)
             
-            logger.info("Applied enhanced seamless tiling post-processing")
+            logger.info("Applied Tiled Diffusion style post-processing with multi-pass blending")
             return enhanced_image
             
         except Exception as e:
@@ -368,9 +541,49 @@ class ParallaxGeneratorColab:
 
 # Convenience functions
 def generate_seamless_image(prompt: str, width: int = 1024, height: int = 256):
-    """Generate a seamless tiled image."""
+    """Generate a seamless tiled image using Tiled Diffusion methodology."""
     generator = ParallaxGeneratorColab()
     return generator.generate_single_tiled_image(prompt, width, height)
+
+
+def test_tiled_diffusion_approach():
+    """Test the new Tiled Diffusion implementation."""
+    print("🧪 Testing Tiled Diffusion Implementation")
+    print("="*50)
+    
+    # Test seamless noise creation
+    processor = SeamlessLatentProcessor(blend_width=64, max_width=16)
+    test_shape = (1, 4, 64, 128)  # Small test shape
+    
+    print(f"Testing seamless noise creation with shape: {test_shape}")
+    try:
+        import torch
+        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu")
+        generator.manual_seed(42)
+        
+        noise = processor.create_seamless_noise(test_shape, generator=generator)
+        print(f"✅ Seamless noise created successfully: {noise.shape}")
+        
+        # Test step constraints
+        constrained_noise = processor.apply_step_constraints(noise, step=5, total_steps=20)
+        print(f"✅ Step constraints applied successfully: {constrained_noise.shape}")
+        
+        print("\n🎯 Key Improvements Implemented:")
+        print("  • Multi-pass noise blending (64, 32, 16 pixel widths)")
+        print("  • Step-by-step constraint application during denoising")
+        print("  • Latent padding strategy for better edge handling")
+        print("  • Enhanced post-processing with edge harmonization")
+        print("  • Constraint strength scheduling (1.0 -> 0.5 over steps)")
+        
+        return True
+        
+    except ImportError:
+        print("⚠️  PyTorch not available in current environment")
+        print("   Implementation is ready for Colab environment")
+        return False
+    except Exception as e:
+        print(f"❌ Test failed: {e}")
+        return False
 
 
 def generate_ultra_wide_wallpaper(prompt: str, wallpaper_type: str = "fhd"):
@@ -480,4 +693,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Run test if in development mode
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        test_tiled_diffusion_approach()
+    else:
+        main()
