@@ -36,43 +36,42 @@ class SeamlessTilingPatcher:
         self.original_forwards = {}
         self.patched_modules = []
     
-    def patch_circular_conv2d(self, module, name=""):
-        """Patch Conv2d module for circular padding horizontally."""
-        if hasattr(module, '_seamless_patched'):
-            return
-            
-        original_forward = module.forward
-        self.original_forwards[id(module)] = original_forward
+    def make_circular_conv2d(self, conv_module):
+        """Create a circular padding wrapper for Conv2d modules."""
+        original_forward = conv_module.forward
         
-        def circular_forward(x):
-            # Get original padding
-            if isinstance(module.padding, tuple):
-                pad_h, pad_w = module.padding
+        def circular_conv_forward(input_tensor):
+            # Get padding values
+            if isinstance(conv_module.padding, tuple):
+                pad_h, pad_w = conv_module.padding
             else:
-                pad_h = pad_w = module.padding
+                pad_h = pad_w = conv_module.padding
             
-            # Only apply circular padding if there's horizontal padding
-            if pad_w > 0:
-                # Apply circular padding horizontally only
-                x = F.pad(x, (pad_w, pad_w, 0, 0), mode='circular')
+            # Apply circular padding horizontally, reflection vertically
+            if pad_w > 0 or pad_h > 0:
+                # Apply horizontal circular padding
+                if pad_w > 0:
+                    input_tensor = F.pad(input_tensor, (pad_w, pad_w, 0, 0), mode='circular')
                 
-                # Apply reflection padding vertically if needed
+                # Apply vertical reflection padding  
                 if pad_h > 0:
-                    x = F.pad(x, (0, 0, pad_h, pad_h), mode='reflect')
+                    input_tensor = F.pad(input_tensor, (0, 0, pad_h, pad_h), mode='reflect')
                 
-                # Set padding to 0 since we've already applied it
-                original_padding = module.padding
-                module.padding = (0, 0) if isinstance(module.padding, tuple) else 0
-                result = original_forward(x)
-                module.padding = original_padding
+                # Temporarily set padding to 0 to avoid double padding
+                original_padding = conv_module.padding
+                conv_module.padding = 0
+                
+                try:
+                    result = original_forward(input_tensor)
+                finally:
+                    # Always restore original padding
+                    conv_module.padding = original_padding
+                
                 return result
             else:
-                # No horizontal padding, use original forward
-                return original_forward(x)
+                return original_forward(input_tensor)
         
-        module.forward = circular_forward
-        module._seamless_patched = True
-        self.patched_modules.append((module, name))
+        return circular_conv_forward
     
     def patch_unet_for_seamless_tiling(self, unet):
         """Patch all Conv2d layers in UNet for seamless horizontal tiling."""
@@ -80,12 +79,31 @@ class SeamlessTilingPatcher:
         
         patched_count = 0
         for name, module in unet.named_modules():
-            if isinstance(module, torch.nn.Conv2d):
-                self.patch_circular_conv2d(module, name)
+            if isinstance(module, torch.nn.Conv2d) and not hasattr(module, '_seamless_patched'):
+                # Store original forward method
+                self.original_forwards[id(module)] = module.forward
+                
+                # Replace with circular version
+                module.forward = self.make_circular_conv2d(module)
+                module._seamless_patched = True
+                self.patched_modules.append((module, name))
                 patched_count += 1
         
-        logger.info(f"Patched {patched_count} Conv2d layers")
+        logger.info(f"Patched {patched_count} Conv2d layers for seamless tiling")
         return unet
+    
+    def unpatch_all(self):
+        """Restore all patched modules to their original state."""
+        for module, name in self.patched_modules:
+            if hasattr(module, '_seamless_patched'):
+                # Restore original forward method
+                if id(module) in self.original_forwards:
+                    module.forward = self.original_forwards[id(module)]
+                delattr(module, '_seamless_patched')
+        
+        self.patched_modules.clear()
+        self.original_forwards.clear()
+        logger.info("All seamless tiling patches removed")
 
 
 class TilingPromptEnhancer:
