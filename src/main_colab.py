@@ -257,7 +257,7 @@ class ParallaxGeneratorColab:
         
         return test_image
     
-    def generate_single_tiled_image(self, prompt: str, width: int = 1024, height: int = 768) -> Dict:
+    def generate_single_tiled_image(self, prompt: str, width: int = 7680, height: int = 768) -> Dict:
         """Generate single seamless tiled image."""
         logger.info(f"Generating: '{prompt}' at {width}x{height}")
         
@@ -313,10 +313,43 @@ class ParallaxGeneratorColab:
 
 
 # Convenience functions
-def generate_seamless_image(prompt: str, width: int = 1024, height: int = 768):
+def generate_seamless_image(prompt: str, width: int = 7680, height: int = 768):
     """Generate a seamless tiled image."""
     generator = ParallaxGeneratorColab()
     return generator.generate_single_tiled_image(prompt, width, height)
+
+
+def generate_ultra_wide_wallpaper(prompt: str, wallpaper_type: str = "fhd"):
+    """Generate ultra-wide wallpaper for side-scrolling (10:1 aspect ratio)."""
+    wallpaper_sizes = {
+        "hd": (13660, 768),     # 1366x768 * 10 = 13660x768
+        "fhd": (19200, 1080),   # 1920x1080 * 10 = 19200x1080  
+        "4k": (38400, 2160)     # 3840x2160 * 10 = 38400x2160
+    }
+    
+    if wallpaper_type not in wallpaper_sizes:
+        wallpaper_type = "fhd"
+    
+    width, height = wallpaper_sizes[wallpaper_type]
+    print(f"Generating {wallpaper_type.upper()} ultra-wide wallpaper: {width}x{height} (10:1 aspect ratio)")
+    
+    generator = ParallaxGeneratorColab()
+    return generator.generate_single_tiled_image(prompt, width, height)
+
+
+def generate_side_scrolling_background(prompt: str, height: int = 1080, aspect_ratio: str = "10:1"):
+    """Generate background optimized for side-scrolling games."""
+    try:
+        width_ratio, height_ratio = map(int, aspect_ratio.split(':'))
+        width = height * width_ratio // height_ratio
+        
+        print(f"Generating side-scrolling background: {width}x{height} ({aspect_ratio} aspect ratio)")
+        
+        generator = ParallaxGeneratorColab()
+        return generator.generate_single_tiled_image(prompt, width, height)
+    except ValueError:
+        print(f"Invalid aspect ratio: {aspect_ratio}. Using default 10:1")
+        return generate_side_scrolling_background(prompt, height, "10:1")
 
 
 def main():
@@ -325,18 +358,46 @@ def main():
     
     parser = argparse.ArgumentParser(description="Seamless Parallax Generator")
     parser.add_argument("prompt", nargs='?', help="Text prompt for generation")
-    parser.add_argument("--width", type=int, default=1024, help="Image width")
-    parser.add_argument("--height", type=int, default=768, help="Image height")
+    parser.add_argument("--width", type=int, default=7680, help="Image width (default: 7680 for ultra-wide)")
+    parser.add_argument("--height", type=int, default=768, help="Image height (default: 768 for wallpaper)")
+    parser.add_argument("--wallpaper", choices=["hd", "fhd", "4k"], help="Preset wallpaper sizes: hd=1366x768, fhd=1920x1080, 4k=3840x2160")
+    parser.add_argument("--aspect-ratio", type=str, help="Aspect ratio like '10:1' for ultra-wide side-scrolling")
     parser.add_argument("--output", default="/content/parallax_output", help="Output directory")
     
     args = parser.parse_args()
+    
+    # Handle wallpaper presets
+    if args.wallpaper:
+        wallpaper_sizes = {
+            "hd": (1366, 768),
+            "fhd": (1920, 1080), 
+            "4k": (3840, 2160)
+        }
+        base_width, base_height = wallpaper_sizes[args.wallpaper]
+        # Make ultra-wide for side-scrolling (10x width)
+        args.width = base_width * 10
+        args.height = base_height
+        print(f"Using {args.wallpaper.upper()} wallpaper preset: {args.width}x{args.height} (10:1 aspect ratio)")
+    
+    # Handle aspect ratio
+    elif args.aspect_ratio:
+        try:
+            width_ratio, height_ratio = map(int, args.aspect_ratio.split(':'))
+            if args.height:
+                args.width = args.height * width_ratio // height_ratio
+            else:
+                args.height = args.width * height_ratio // width_ratio
+            print(f"Using {args.aspect_ratio} aspect ratio: {args.width}x{args.height}")
+        except ValueError:
+            print(f"Invalid aspect ratio format: {args.aspect_ratio}. Use format like '10:1'")
+            return 1
     
     if not args.prompt:
         args.prompt = "serene mountain landscape with lake and pine trees"
         print(f"Using default prompt: '{args.prompt}'")
     
     print(f"Prompt: '{args.prompt}'")
-    print(f"Resolution: {args.width}x{args.height}")
+    print(f"Resolution: {args.width}x{args.height} (aspect ratio: {args.width/args.height:.1f}:1)")
     print(f"Output: {args.output}")
     
     try:
