@@ -21,20 +21,39 @@ logger = logging.getLogger(__name__)
 def get_hf_token():
     """Get HuggingFace token from Google Colab userdata."""
     try:
+        # Check if we're in Colab first
+        import google.colab
         from google.colab import userdata
+        
+        # Try to get the token
         token = userdata.get('HF_TOKEN')
-        logger.info("🔐 HuggingFace token loaded from Colab userdata")
-        return token
+        if token:
+            logger.info("🔐 HuggingFace token loaded from Colab userdata")
+            return token
+        else:
+            logger.warning("⚠️  HF_TOKEN not found in Colab secrets")
+            return None
+            
     except ImportError:
-        logger.warning("⚠️  Not running in Google Colab, falling back to environment variable")
+        # Not in Colab, try environment variable
+        logger.info("📝 Not running in Google Colab, checking environment variable")
         token = os.getenv('HF_TOKEN')
         if token:
             logger.info("🔐 HuggingFace token loaded from environment")
+            return token
         else:
-            logger.warning("⚠️  No HF_TOKEN found - some models may not be accessible")
-        return token
+            logger.warning("⚠️  No HF_TOKEN found in environment")
+            return None
+            
+    except AttributeError as e:
+        # Colab userdata not available yet
+        logger.warning("⚠️  Colab userdata not available yet - this is normal during initialization")
+        logger.info("💡 Tip: Make sure you've added HF_TOKEN to Colab Secrets (🔑 tab)")
+        return None
+        
     except Exception as e:
-        logger.warning(f"⚠️  Could not get HF_TOKEN from userdata: {e}")
+        logger.warning(f"⚠️  Could not get HF_TOKEN: {e}")
+        logger.info("💡 Tip: Add HF_TOKEN to Colab Secrets (🔑 tab) or set as environment variable")
         return None
 
 
@@ -62,8 +81,8 @@ class ModelManagerColab:
         self.models = {}
         self.use_drive_cache = use_drive_cache
         
-        # Get HuggingFace token from Colab userdata
-        self.hf_token = get_hf_token()
+        # Get HuggingFace token from Colab userdata (with retry)
+        self.hf_token = self._get_token_with_retry()
         
         # Colab-optimized model configurations
         self.model_configs = {
@@ -108,6 +127,22 @@ class ModelManagerColab:
         os.environ["DIFFUSERS_CACHE"] = str(self.cache_dir / "diffusers")
         
         logger.info(f"ModelManagerColab initialized with cache: {self.get_cache_path()}")
+    
+    def _get_token_with_retry(self, max_retries: int = 3) -> Optional[str]:
+        """Get HF token with retry mechanism for Colab initialization delays."""
+        import time
+        
+        for attempt in range(max_retries):
+            token = get_hf_token()
+            if token:
+                return token
+            
+            if attempt < max_retries - 1:
+                logger.info(f"🔄 Retrying HF_TOKEN access in 2 seconds... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(2)
+        
+        logger.info("💡 Continuing without HF_TOKEN - public models will still work")
+        return None
     
     def get_cache_path(self) -> Path:
         """Get the active HuggingFace cache directory."""

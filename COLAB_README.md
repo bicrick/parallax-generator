@@ -80,6 +80,12 @@ print(f"Tiled preview: {results['preview_path']}")
 
 # Custom output directory
 !python src/main_colab.py "ocean waves" --output /content/my_art
+
+# Disable Google Drive storage (local only)
+!python src/main_colab.py "space nebula" --no-drive
+
+# View your image gallery
+!python src/main_colab.py --gallery
 ```
 
 ### All Available Options
@@ -94,7 +100,9 @@ print(f"Tiled preview: {results['preview_path']}")
 - `--output` - Output directory (default: /content/parallax_output)
 - `--mode` - Generation mode: "single" or "layers" (default: single)
 - `--no-tiling` - Disable seamless tiling for single images
+- `--no-drive` - Disable Google Drive storage (local only)
 - `--gpu-info` - Show GPU information and exit
+- `--gallery` - Show image gallery and exit
 
 ## 🎨 Python Function Examples
 
@@ -166,9 +174,20 @@ After generation, you'll find these files in your output directory:
 - `foreground.png` - Foreground layer with transparency  
 - `composite_preview.png` - All layers combined
 
-## 🔧 Model Caching
+## 🔧 Storage Strategy
 
-**Important**: Models are automatically cached in Google Drive at `/content/drive/MyDrive/parallax_models/` so they persist between Colab sessions. The first run will download ~4GB of models, but subsequent runs will be much faster.
+### Models (Large Files ~4GB each)
+- **Cached locally** in `/content/huggingface_cache/` for speed
+- **Session duration**: ~12 hours (Colab runtime)
+- **First run**: Downloads models (~5-10 minutes)
+- **Subsequent runs**: Uses cached models (instant)
+- **Why not Drive**: Models are too large and would exceed Drive quotas
+
+### Images (Small Files ~2-5MB each)
+- **Local storage**: `/content/parallax_output/` (temporary)
+- **Google Drive**: `/content/drive/MyDrive/parallax_gallery/` (persistent)
+- **Metadata**: JSON files with generation details
+- **Gallery system**: Browse all your generated images
 
 ### Available Models
 - `sd15_base` - Stable Diffusion 1.5 for text-to-image (recommended)
