@@ -141,10 +141,14 @@ class SeamlessLatentProcessor:
 class ParallaxGeneratorColab:
     """Seamless parallax generator for Google Colab."""
     
-    def __init__(self, output_dir: str = "/content/parallax_output"):
+    def __init__(self, output_dir: str = "/content/parallax_output", drive_output_dir: str = "/content/drive/MyDrive/parallax_gallery"):
         """Initialize the generator."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Setup Google Drive output
+        self.drive_output_dir = Path(drive_output_dir)
+        self.mount_drive()
         
         self.model_manager = ModelManagerColab(use_drive_cache=False)
         self.tiling_patcher = SeamlessTilingPatcher()
@@ -152,7 +156,19 @@ class ParallaxGeneratorColab:
         self.latent_processor = SeamlessLatentProcessor()
         self.patched_pipelines = set()
         
-        logger.info(f"Generator initialized. Output: {self.output_dir}")
+        logger.info(f"Generator initialized. Local: {self.output_dir}, Drive: {self.drive_output_dir}")
+    
+    def mount_drive(self):
+        """Mount Google Drive."""
+        try:
+            from google.colab import drive
+            drive.mount('/content/drive')
+            self.drive_output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Google Drive mounted and gallery directory created")
+        except ImportError:
+            logger.warning("Not in Google Colab, skipping drive mount")
+        except Exception as e:
+            logger.error(f"Failed to mount Google Drive: {e}")
     
     def prepare_pipeline_for_seamless_tiling(self, pipeline, pipeline_id: str = None) -> object:
         """Prepare pipeline for seamless tiling."""
@@ -193,22 +209,42 @@ class ParallaxGeneratorColab:
         result = pipeline(**generation_params)
         return result.images[0]
     
-    def save_image(self, image: Image.Image, filename: str, metadata: dict = None) -> str:
-        """Save image with metadata."""
+    def save_image(self, image: Image.Image, filename: str, metadata: dict = None) -> dict:
+        """Save image with metadata to both local and Drive."""
         from datetime import datetime
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_filename = f"{timestamp}_{filename.replace(' ', '_')}"
         
-        image_path = self.output_dir / f"{safe_filename}.png"
-        image.save(image_path)
+        # Save locally
+        local_image_path = self.output_dir / f"{safe_filename}.png"
+        image.save(local_image_path)
         
+        # Save metadata locally
         if metadata:
-            meta_path = self.output_dir / f"{safe_filename}_meta.json"
-            with open(meta_path, 'w') as f:
+            local_meta_path = self.output_dir / f"{safe_filename}_meta.json"
+            with open(local_meta_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
         
-        return str(image_path)
+        # Save to Drive
+        drive_image_path = None
+        try:
+            drive_image_path = self.drive_output_dir / f"{safe_filename}.png"
+            image.save(drive_image_path)
+            
+            if metadata:
+                drive_meta_path = self.drive_output_dir / f"{safe_filename}_meta.json"
+                with open(drive_meta_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+            
+            logger.info(f"Saved to Drive: {drive_image_path.name}")
+        except Exception as e:
+            logger.warning(f"Failed to save to Drive: {e}")
+        
+        return {
+            "local": str(local_image_path),
+            "drive": str(drive_image_path) if drive_image_path else None
+        }
     
     def create_tiling_test(self, image: Image.Image, tiles: int = 4) -> Image.Image:
         """Create tiling test image."""
@@ -255,22 +291,23 @@ class ParallaxGeneratorColab:
             "approach": "native_seamless"
         }
         
-        main_path = self.save_image(generated_image, f"seamless_{width}x{height}", metadata)
+        main_paths = self.save_image(generated_image, f"seamless_{width}x{height}", metadata)
         
         # Create and save tiling test
         test_image = self.create_tiling_test(generated_image, tiles=4)
-        test_path = self.save_image(test_image, f"tiling_test_{width}x{height}")
+        test_paths = self.save_image(test_image, f"tiling_test_{width}x{height}")
         
         logger.info("Generation complete")
-        logger.info(f"Main: {Path(main_path).name}")
-        logger.info(f"Test: {Path(test_path).name}")
+        logger.info(f"Local: {Path(main_paths['local']).name}")
+        if main_paths['drive']:
+            logger.info(f"Drive: {Path(main_paths['drive']).name}")
         
         return {
             "prompt": prompt,
             "enhanced_prompt": enhanced_prompt,
             "resolution": (width, height),
-            "main_image": main_path,
-            "test_image": test_path,
+            "main_image": main_paths,
+            "test_image": test_paths,
             "approach": "native_seamless"
         }
 
@@ -313,9 +350,11 @@ def main():
         results = generator.generate_single_tiled_image(args.prompt, args.width, args.height)
         
         print("Generation complete!")
-        print(f"Main: {Path(results['main_image']).name}")
-        print(f"Test: {Path(results['test_image']).name}")
-        
+        print(f"Local: {Path(results['main_image']['local']).name}")
+        if results['main_image']['drive']:
+            print(f"Drive: {Path(results['main_image']['drive']).name}")
+        print(f"Test: {Path(results['test_image']['local']).name}")
+    
     except Exception as e:
         print(f"Error: {str(e)}")
         import traceback
