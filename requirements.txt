@@ -1,0 +1,38 @@
+# Core ML and Image Processing
+mlx>=0.15.0
+mlx-lm>=0.16.0
+diffusers>=0.28.0
+transformers>=4.40.0
+torch>=2.0.0
+torchvision>=0.15.0
+accelerate>=0.30.0
+
+# Image Processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Stable Diffusion specific
+safetensors>=0.4.0
+# xformers>=0.0.20  # Optional but recommended for memory efficiency - commented out due to macOS compilation issues
+
+# LLM Integration (for speed assignment)
+openai>=1.30.0  # For GPT integration if needed
+anthropic>=0.25.0  # Alternative LLM option
+
+# Utilities
+requests>=2.31.0
+tqdm>=4.65.0
+matplotlib>=3.7.0  # For debugging/visualization
+scipy>=1.11.0
+
+# Web interface
+flask>=2.3.0  # For simple HTML viewer server
+jinja2>=3.1.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Development
+pytest>=7.4.0
+black>=23.0.0
