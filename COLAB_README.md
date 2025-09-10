@@ -27,6 +27,23 @@ In Colab, go to the "Secrets" tab (🔑) in the left sidebar and add:
 - **Value**: Your HuggingFace token (get one at https://huggingface.co/settings/tokens)
 
 ### 5. Generate Your First Image
+
+#### Option A: Command Line (Recommended)
+```bash
+# Generate a single tiled image with default settings
+!python src/main_colab.py "a serene mountain landscape with a lake and pine trees"
+
+# Custom dimensions and output directory
+!python src/main_colab.py "cyberpunk city at night" --width 512 --height 512 --output /content/my_images
+
+# Generate full parallax layers instead of single image
+!python src/main_colab.py "fantasy forest scene" --mode layers --width 1024 --height 768
+
+# Show GPU info
+!python src/main_colab.py --gpu-info
+```
+
+#### Option B: Python Functions
 ```python
 from src.main_colab import generate_single_image
 
@@ -42,7 +59,44 @@ print(f"Image saved: {results['image_path']}")
 print(f"Tiled preview: {results['preview_path']}")
 ```
 
-## 🎨 Usage Examples
+## 🎨 Command Line Usage
+
+### Basic Commands
+```bash
+# Simple generation with demo prompt (if no prompt provided)
+!python src/main_colab.py
+
+# Generate with custom prompt
+!python src/main_colab.py "mountain landscape with lake"
+
+# Custom dimensions
+!python src/main_colab.py "forest scene" --width 512 --height 512
+
+# Disable tiling (for non-repeating images)
+!python src/main_colab.py "portrait of a wizard" --no-tiling
+
+# Generate full parallax layers
+!python src/main_colab.py "medieval castle" --mode layers
+
+# Custom output directory
+!python src/main_colab.py "ocean waves" --output /content/my_art
+```
+
+### All Available Options
+```bash
+!python src/main_colab.py --help
+```
+
+**Arguments:**
+- `prompt` - Text description of what to generate (optional, uses demo if not provided)
+- `--width` - Image width in pixels (default: 1024)
+- `--height` - Image height in pixels (default: 768) 
+- `--output` - Output directory (default: /content/parallax_output)
+- `--mode` - Generation mode: "single" or "layers" (default: single)
+- `--no-tiling` - Disable seamless tiling for single images
+- `--gpu-info` - Show GPU information and exit
+
+## 🎨 Python Function Examples
 
 ### Single Tiled Image
 Perfect for backgrounds that need to tile horizontally:

@@ -14,6 +14,14 @@ from PIL import Image, ImageDraw
 import torch
 import cv2
 
+import sys
+import os
+from pathlib import Path
+
+# Add the src directory to Python path for imports
+current_dir = Path(__file__).parent
+sys.path.insert(0, str(current_dir))
+
 from model_manager_colab import ModelManagerColab
 
 # Configure logging
@@ -399,22 +407,86 @@ def generate_parallax_pack(prompt: str, width: int = 1024, height: int = 768):
 
 
 def main():
-    """Demo function for testing."""
+    """CLI entry point with argument parsing."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Parallax Generator - Colab Version")
+    parser.add_argument("prompt", nargs='?', help="Text prompt for image generation")
+    parser.add_argument("--width", type=int, default=1024, help="Image width (default: 1024)")
+    parser.add_argument("--height", type=int, default=768, help="Image height (default: 768)")
+    parser.add_argument("--output", default="/content/parallax_output", help="Output directory")
+    parser.add_argument("--mode", choices=["single", "layers"], default="single", 
+                       help="Generation mode: 'single' for one tiled image, 'layers' for full parallax pack")
+    parser.add_argument("--no-tiling", action="store_true", help="Disable seamless tiling (single mode only)")
+    parser.add_argument("--gpu-info", action="store_true", help="Show GPU information and exit")
+    
+    args = parser.parse_args()
+    
     print("🚀 Parallax Generator - Colab Version")
     print("=" * 50)
     
-    # Example usage
-    prompt = "a serene mountain landscape with a lake, pine trees, and distant peaks"
+    # Show GPU info if requested
+    if args.gpu_info:
+        if torch.cuda.is_available():
+            print(f"🚀 GPU: {torch.cuda.get_device_name()}")
+            print(f"💾 GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            print(f"🔥 CUDA Version: {torch.version.cuda}")
+        else:
+            print("⚠️  No GPU detected - this will be very slow!")
+        return
     
-    print(f"📝 Generating image with prompt: '{prompt}'")
+    # Check if prompt is provided
+    if not args.prompt:
+        # Use demo prompt if none provided
+        args.prompt = "a serene mountain landscape with a lake, pine trees, and distant peaks"
+        print(f"📝 No prompt provided, using demo: '{args.prompt}'")
+    else:
+        print(f"📝 Prompt: '{args.prompt}'")
     
-    # Generate single tiled image
-    results = generate_single_image(prompt, width=512, height=512, enable_tiling=True)
+    print(f"📏 Resolution: {args.width}x{args.height}")
+    print(f"📁 Output: {args.output}")
     
-    print("\n✅ Generation complete!")
-    print(f"📄 Image saved: {Path(results['image_path']).name}")
-    if results['preview_path']:
-        print(f"🖼️  Tiled preview: {Path(results['preview_path']).name}")
+    try:
+        if args.mode == "single":
+            # Generate single tiled image
+            enable_tiling = not args.no_tiling
+            print(f"🔄 Tiling: {'Enabled' if enable_tiling else 'Disabled'}")
+            
+            generator = ParallaxGeneratorColab(output_dir=args.output)
+            generator.show_gpu_info()
+            
+            results = generator.generate_single_tiled_image(
+                args.prompt, args.width, args.height, enable_tiling
+            )
+            
+            print("\n✅ Single image generation complete!")
+            print(f"📄 Image saved: {Path(results['image_path']).name}")
+            if results['preview_path']:
+                print(f"🖼️  Tiled preview: {Path(results['preview_path']).name}")
+                
+        elif args.mode == "layers":
+            # Generate full parallax layers
+            generator = ParallaxGeneratorColab(output_dir=args.output)
+            generator.show_gpu_info()
+            
+            results = generator.generate_parallax_layers(
+                args.prompt, args.width, args.height
+            )
+            
+            print("\n✅ Parallax layers generation complete!")
+            print("📄 Generated layers:")
+            for layer_name, path in results['layers'].items():
+                print(f"  {layer_name}: {Path(path).name}")
+            print(f"  composite: {Path(results['composite_preview']).name}")
+    
+    except Exception as e:
+        print(f"\n❌ Generation failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    
+    print(f"\n📁 All files saved to: {args.output}")
+    return 0
 
 
 if __name__ == "__main__":
