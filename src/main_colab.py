@@ -257,7 +257,7 @@ class ParallaxGeneratorColab:
         
         return test_image
     
-    def generate_single_tiled_image(self, prompt: str, width: int = 7680, height: int = 768) -> Dict:
+    def generate_single_tiled_image(self, prompt: str, width: int = 1024, height: int = 256) -> Dict:
         """Generate single seamless tiled image."""
         logger.info(f"Generating: '{prompt}' at {width}x{height}")
         
@@ -313,7 +313,7 @@ class ParallaxGeneratorColab:
 
 
 # Convenience functions
-def generate_seamless_image(prompt: str, width: int = 7680, height: int = 768):
+def generate_seamless_image(prompt: str, width: int = 1024, height: int = 256):
     """Generate a seamless tiled image."""
     generator = ParallaxGeneratorColab()
     return generator.generate_single_tiled_image(prompt, width, height)
@@ -358,8 +358,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="Seamless Parallax Generator")
     parser.add_argument("prompt", nargs='?', help="Text prompt for generation")
-    parser.add_argument("--width", type=int, default=7680, help="Image width (default: 7680 for ultra-wide)")
-    parser.add_argument("--height", type=int, default=768, help="Image height (default: 768 for wallpaper)")
+    parser.add_argument("--width", type=int, default=1024, help="Image width (default: 1024 for testing)")
+    parser.add_argument("--height", type=int, default=256, help="Image height (default: 256 for testing)")
     parser.add_argument("--wallpaper", choices=["hd", "fhd", "4k"], help="Preset wallpaper sizes: hd=1366x768, fhd=1920x1080, 4k=3840x2160")
     parser.add_argument("--aspect-ratio", type=str, help="Aspect ratio like '10:1' for ultra-wide side-scrolling")
     parser.add_argument("--output", default="/content/parallax_output", help="Output directory")
