@@ -47,8 +47,11 @@ class SeamlessTilingPatcher:
         def circular_forward(x):
             pad_h, pad_w = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
             
+            # Apply more aggressive circular padding for better seamless results
             if pad_w > 0:
-                x = F.pad(x, (pad_w, pad_w, 0, 0), mode='circular')
+                # Use larger padding for better blending
+                extended_pad_w = max(pad_w * 2, 8)  # At least 8 pixels
+                x = F.pad(x, (extended_pad_w, extended_pad_w, 0, 0), mode='circular')
             if pad_h > 0:
                 x = F.pad(x, (0, 0, pad_h, pad_h), mode='reflect')
             
@@ -114,7 +117,7 @@ class TilingPromptEnhancer:
 class SeamlessLatentProcessor:
     """Processes latents for seamless tiling."""
     
-    def __init__(self, blend_width: int = 64):
+    def __init__(self, blend_width: int = 128):
         self.blend_width = blend_width
     
     def create_seamless_noise(self, shape: Tuple[int, ...], generator: Optional[torch.Generator] = None, dtype: torch.dtype = torch.float16) -> torch.Tensor:
@@ -125,13 +128,16 @@ class SeamlessLatentProcessor:
         if noise.size(-1) <= self.blend_width * 2:
             return noise
         
-        # Apply horizontal wrapping
-        blend_mask = torch.linspace(0, 1, self.blend_width, device=noise.device, dtype=noise.dtype)
+        # Apply horizontal wrapping with smoother blending
+        # Use cosine interpolation for smoother blending
+        x = torch.linspace(0, 1, self.blend_width, device=noise.device, dtype=noise.dtype)
+        blend_mask = 0.5 * (1 - torch.cos(x * torch.pi))  # Cosine interpolation
         blend_mask = blend_mask.view(1, 1, 1, -1)
         
         left_edge = noise[..., :self.blend_width].clone()
         right_edge = noise[..., -self.blend_width:].clone()
         
+        # Smoother blending
         noise[..., :self.blend_width] = left_edge * (1 - blend_mask) + right_edge * blend_mask
         noise[..., -self.blend_width:] = right_edge * (1 - blend_mask) + left_edge * blend_mask
         
@@ -207,7 +213,47 @@ class ParallaxGeneratorColab:
         
         logger.info("Generating seamless image")
         result = pipeline(**generation_params)
-        return result.images[0]
+        
+        # Apply additional seamless post-processing for perfect tiling
+        generated_image = result.images[0]
+        generated_image = self.enhance_seamless_tiling(generated_image)
+        
+        return generated_image
+    
+    def enhance_seamless_tiling(self, image: Image.Image, blend_width: int = 64) -> Image.Image:
+        """Apply additional post-processing to enhance seamless tiling."""
+        try:
+            width, height = image.size
+            
+            if width <= blend_width * 2:
+                return image
+            
+            # Convert to numpy for processing
+            img_array = np.array(image, dtype=np.float32)
+            
+            # Create smoother blend mask using cosine interpolation
+            x = np.linspace(0, 1, blend_width)
+            blend_mask = 0.5 * (1 - np.cos(x * np.pi))
+            blend_mask = blend_mask.reshape(1, -1, 1)
+            
+            # Extract edges
+            left_edge = img_array[:, :blend_width].copy()
+            right_edge = img_array[:, -blend_width:].copy()
+            
+            # Apply enhanced blending
+            img_array[:, :blend_width] = left_edge * (1 - blend_mask) + right_edge * blend_mask
+            img_array[:, -blend_width:] = right_edge * (1 - blend_mask) + left_edge * blend_mask
+            
+            # Convert back to PIL Image
+            result_array = np.clip(img_array, 0, 255).astype(np.uint8)
+            enhanced_image = Image.fromarray(result_array)
+            
+            logger.info("Applied enhanced seamless tiling post-processing")
+            return enhanced_image
+            
+        except Exception as e:
+            logger.warning(f"Seamless enhancement failed: {e}, using original")
+            return image
     
     def save_image(self, image: Image.Image, filename: str, metadata: dict = None) -> dict:
         """Save image with metadata to both local and Drive."""
