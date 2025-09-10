@@ -47,11 +47,10 @@ class SeamlessTilingPatcher:
         def circular_forward(x):
             pad_h, pad_w = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
             
-            # Apply more aggressive circular padding for better seamless results
+            # Apply circular padding for seamless results
             if pad_w > 0:
-                # Use larger padding for better blending
-                extended_pad_w = max(pad_w * 2, 8)  # At least 8 pixels
-                x = F.pad(x, (extended_pad_w, extended_pad_w, 0, 0), mode='circular')
+                # Use standard padding to avoid tensor size issues
+                x = F.pad(x, (pad_w, pad_w, 0, 0), mode='circular')
             if pad_h > 0:
                 x = F.pad(x, (0, 0, pad_h, pad_h), mode='reflect')
             
@@ -81,37 +80,14 @@ class SeamlessTilingPatcher:
 
 
 class TilingPromptEnhancer:
-    """Enhances prompts for seamless tiling."""
+    """Simple prompt enhancement for seamless tiling."""
     
-    TILING_MODIFIERS = {
-        "landscape": ["endless horizon", "continuous landscape"],
-        "abstract": ["seamless pattern", "tileable texture"],
-        "architectural": ["continuous structure", "repeating elements"],
-        "nature": ["endless forest", "continuous ocean"]
-    }
-    
-    NEGATIVE_PROMPTS = ["borders", "edges", "frames", "boundaries", "seams"]
-    
-    def enhance_for_tiling(self, prompt: str, content_type: str = "landscape") -> Tuple[str, str]:
-        """Enhance prompt for seamless tiling."""
-        modifiers = self.TILING_MODIFIERS.get(content_type, self.TILING_MODIFIERS["landscape"])
-        tiling_terms = ", ".join(modifiers[:2])
-        enhanced_prompt = f"{prompt}, {tiling_terms}, high quality, detailed"
-        negative_prompt = ", ".join(self.NEGATIVE_PROMPTS)
+    def enhance_for_tiling(self, prompt: str) -> Tuple[str, str]:
+        """Enhance prompt for seamless tiling without forcing specific content."""
+        # Just add basic quality terms and anti-seam negative prompt
+        enhanced_prompt = f"{prompt}, high quality, detailed"
+        negative_prompt = "borders, edges, frames, boundaries, seams"
         return enhanced_prompt, negative_prompt
-    
-    def detect_content_type(self, prompt: str) -> str:
-        """Detect content type from prompt."""
-        prompt_lower = prompt.lower()
-        
-        if any(word in prompt_lower for word in ["building", "city", "architecture"]):
-            return "architectural"
-        if any(word in prompt_lower for word in ["pattern", "texture", "abstract"]):
-            return "abstract"
-        if any(word in prompt_lower for word in ["forest", "ocean", "sky", "clouds"]):
-            return "nature"
-        
-        return "landscape"
 
 
 class SeamlessLatentProcessor:
@@ -311,11 +287,9 @@ class ParallaxGeneratorColab:
         pipeline = self.model_manager.load_model("sd15_base")
         pipeline = self.prepare_pipeline_for_seamless_tiling(pipeline, "sd15_base")
         
-        # Enhance prompt
-        content_type = self.prompt_enhancer.detect_content_type(prompt)
-        enhanced_prompt, negative_prompt = self.prompt_enhancer.enhance_for_tiling(prompt, content_type)
+        # Enhance prompt (minimal enhancement)
+        enhanced_prompt, negative_prompt = self.prompt_enhancer.enhance_for_tiling(prompt)
         
-        logger.info(f"Content type: {content_type}")
         logger.info(f"Enhanced: {enhanced_prompt}")
         
         # Generate image
@@ -333,7 +307,6 @@ class ParallaxGeneratorColab:
             "enhanced_prompt": enhanced_prompt,
             "negative_prompt": negative_prompt,
             "resolution": {"width": width, "height": height},
-            "content_type": content_type,
             "approach": "native_seamless"
         }
         
