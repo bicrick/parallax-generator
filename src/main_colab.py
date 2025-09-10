@@ -45,21 +45,30 @@ class SeamlessTilingPatcher:
         self.original_forwards[id(module)] = original_forward
         
         def circular_forward(x):
-            pad_h, pad_w = module.padding if isinstance(module.padding, tuple) else (module.padding, module.padding)
+            # Get original padding
+            if isinstance(module.padding, tuple):
+                pad_h, pad_w = module.padding
+            else:
+                pad_h = pad_w = module.padding
             
-            # Apply circular padding for seamless results
+            # Only apply circular padding if there's horizontal padding
             if pad_w > 0:
-                # Use standard padding to avoid tensor size issues
+                # Apply circular padding horizontally only
                 x = F.pad(x, (pad_w, pad_w, 0, 0), mode='circular')
-            if pad_h > 0:
-                x = F.pad(x, (0, 0, pad_h, pad_h), mode='reflect')
-            
-            original_padding = module.padding
-            module.padding = 0
-            result = original_forward(x)
-            module.padding = original_padding
-            
-            return result
+                
+                # Apply reflection padding vertically if needed
+                if pad_h > 0:
+                    x = F.pad(x, (0, 0, pad_h, pad_h), mode='reflect')
+                
+                # Set padding to 0 since we've already applied it
+                original_padding = module.padding
+                module.padding = (0, 0) if isinstance(module.padding, tuple) else 0
+                result = original_forward(x)
+                module.padding = original_padding
+                return result
+            else:
+                # No horizontal padding, use original forward
+                return original_forward(x)
         
         module.forward = circular_forward
         module._seamless_patched = True
@@ -123,7 +132,7 @@ class SeamlessLatentProcessor:
 class ParallaxGeneratorColab:
     """Seamless parallax generator for Google Colab."""
     
-    def __init__(self, output_dir: str = "/content/parallax_output", drive_output_dir: str = "/content/drive/MyDrive/parallax_gallery"):
+    def __init__(self, output_dir: str = "/content/parallax_output", drive_output_dir: str = "/content/drive/MyDrive/parallax_gallery", enable_unet_patching: bool = True):
         """Initialize the generator."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -133,12 +142,15 @@ class ParallaxGeneratorColab:
         self.mount_drive()
         
         self.model_manager = ModelManagerColab(use_drive_cache=False)
-        self.tiling_patcher = SeamlessTilingPatcher()
+        self.enable_unet_patching = enable_unet_patching
+        self.tiling_patcher = SeamlessTilingPatcher() if enable_unet_patching else None
         self.prompt_enhancer = TilingPromptEnhancer()
         self.latent_processor = SeamlessLatentProcessor()
         self.patched_pipelines = set()
         
-        logger.info(f"Generator initialized. Local: {self.output_dir}, Drive: {self.drive_output_dir}")
+        approach = "UNet patching + post-processing" if enable_unet_patching else "Post-processing only"
+        logger.info(f"Generator initialized. Approach: {approach}")
+        logger.info(f"Local: {self.output_dir}, Drive: {self.drive_output_dir}")
     
     def mount_drive(self):
         """Mount Google Drive."""
@@ -154,6 +166,9 @@ class ParallaxGeneratorColab:
     
     def prepare_pipeline_for_seamless_tiling(self, pipeline, pipeline_id: str = None) -> object:
         """Prepare pipeline for seamless tiling."""
+        if not self.enable_unet_patching:
+            return pipeline
+            
         pipeline_id = pipeline_id or f"pipeline_{id(pipeline)}"
         
         if pipeline_id not in self.patched_pipelines:
@@ -178,14 +193,16 @@ class ParallaxGeneratorColab:
         if negative_prompt:
             generation_params["negative_prompt"] = negative_prompt
         
-        # Use seamless noise with correct dtype
-        latent_shape = (1, pipeline.unet.config.in_channels, height // 8, width // 8)
-        custom_latents = self.latent_processor.create_seamless_noise(
-            latent_shape, 
-            generator=generation_params["generator"],
-            dtype=pipeline.unet.dtype
-        )
-        generation_params["latents"] = custom_latents
+        # Use seamless noise only if UNet patching is enabled
+        if self.enable_unet_patching:
+            latent_shape = (1, pipeline.unet.config.in_channels, height // 8, width // 8)
+            custom_latents = self.latent_processor.create_seamless_noise(
+                latent_shape, 
+                generator=generation_params["generator"],
+                dtype=pipeline.unet.dtype
+            )
+            generation_params["latents"] = custom_latents
+            logger.info("Using seamless noise initialization")
         
         logger.info("Generating seamless image")
         result = pipeline(**generation_params)
